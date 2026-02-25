@@ -1,0 +1,705 @@
+/**
+ * @file pathTracer.comp
+ * @brief Compute shader for path tracing rendering.
+ */
+
+#version 450
+
+#ifndef VULKAN
+#extension GL_ARB_bindless_texture : require
+#else
+#extension GL_EXT_nonuniform_qualifier : require
+#endif
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+/**
+ * @brief Storage buffer for accumulating radiance values for each pixel and wavelength.
+ */
+layout(binding = 0) buffer Radiances {
+    float radiances[]; // Array to store the accumulated radiance for each pixel and wavelength
+} b_outRadiances; // Output buffer for radiances
+
+/**
+ * @brief Uniform struct representing the scene parameters.
+ */
+layout(binding = 1) uniform Scene {
+    int resX; // Resolution in X
+    int resY; // Resolution in Y
+    int traceDepth; // Trace depth
+    int currentSample; // Current sample count
+} u_scene; // Scene parameters
+
+/**
+ * @brief Uniform struct representing the camera parameters.
+ */
+layout(binding = 2) uniform Camera {
+    vec4 pos; // Camera position
+    vec4 dir; // Camera direction
+    vec4 up; // Camera up vector
+
+    float focal; // Focal length
+    float fov; // Field of view
+    float focusDist; // Focus distance
+    float fStop; // F-stop value
+} u_camera; // Camera parameters
+
+#ifdef VULKAN
+layout(binding = 3) uniform sampler2D u_textures[]; // Array of textures
+#else
+layout(binding = 3) buffer Textures {
+    sampler2D u_textures[]; // Array of textures
+};
+#endif
+
+/**
+ * @brief Sample a texture at given UV coordinates.
+ * @param index The index of the texture.
+ * @param uv The UV coordinates.
+ * @return The sampled color.
+ */
+vec4 sampleTexture(uint index, vec2 uv) {
+#ifdef VULKAN
+    return texture(u_textures[nonuniformEXT(index)], uv);
+#else
+    return texture(sampler2D(u_textures[index]), uv);
+#endif
+}
+
+/**
+ * @brief Struct representing a vertex in the mesh.
+ */
+struct Vertex {
+    vec4 pos; // Position
+    vec4 normal; // Normal
+    vec4 tangent; // Tangent
+    vec2 texCoord; // Texture Coordinate
+    vec2 padding; // Padding for alignment
+};
+/**
+ * @brief Storage buffer containing the vertices of the mesh.
+ */
+layout(binding = 4) readonly buffer Vertices {
+    Vertex vertices[]; // Array of vertices
+} b_vertices; // Vertex buffer
+
+/**
+ * @brief Struct representing a triangle in the mesh.
+ */
+struct Triangle {
+    uint v0; // Index of vertex 0
+    uint v1; // Index of vertex 1
+    uint v2; // Index of vertex 2
+    uint idxMaterial; // Index of the material
+};
+/**
+ * @brief Storage buffer containing the triangles of the mesh.
+ */
+layout(binding = 5) readonly buffer Triangles {
+    Triangle triangles[]; // Array of triangles
+} b_triangles; // Triangle buffer
+
+/**
+ * @brief Struct representing a material for a mesh.
+ */
+struct Material {
+    int type; // Material type
+    float roughness; // Roughness
+    float temperature; // Temperature
+    float ior; // Index of Refraction
+
+    uint flags; // Material flags
+    uint idxNormalTex; // Index of normal texture
+    uint idxRoughnessTex; // Index of roughness texture
+    uint idxTemperatureTex; // Index of temperature texture
+
+    uint idxSpMaterial; // Index of associated spectral material
+    uint padding[3]; // Padding for alignment
+};
+
+const int MATERIAL_TYPE_DIFFUSE = 0; // Diffuse material
+const int MATERIAL_TYPE_SPECULAR = 1; // Specular material
+const int MATERIAL_TYPE_GLOSSY = 2; // Glossy material
+const int MATERIAL_TYPE_TRANSLUCENT = 3; // Translucent material
+
+const uint MATERIAL_NORMAL_MAP = 1 << 0; // Has normal texture
+const uint MATERIAL_ROUGHNESS_MAP = 1 << 1; // Has roughness texture
+const uint MATERIAL_TEMPERATURE_MAP = 1 << 2; // Has temperature texture
+
+/**
+ * @brief Storage buffer containing the materials of the mesh.
+ */
+layout(binding = 6) readonly buffer Materials {
+    Material materials[]; // Array of materials
+} b_materials; // Material buffer
+
+/**
+ * @brief Struct representing a BVH node.
+ */
+struct BvhNode {
+    uint idx; // Index of this node
+    uint rChildOffset; // Offset to the right child node
+    uint idxTriangle; // Index of the triangle (if leaf node)
+    uint leafFlag; // Flag indicating if this is a leaf node
+
+    vec4 aabbMin; // Minimum AABB coordinates
+    vec4 aabbMax; // Maximum AABB coordinates
+};
+/**
+ * @brief Storage buffer containing the BVH nodes.
+ */
+layout(binding = 7) readonly buffer BVH {
+    BvhNode bvhNodes[]; // Array of BVH nodes
+} b_BVH; // BVH buffer
+
+const float EPS = 0.00001; // Small epsilon value
+const float INFINITY = 1e20; // Large value representing infinity
+const float PI = 3.14159265359; // Value of pi
+
+uint g_rngState = 0; // Global RNG state
+/**
+ * @brief Initialize the RNG state based on pixel coordinates and current sample.
+ * @param pixel The pixel coordinates.
+ * @param currentSample The current sample index.
+ */
+void initRngState(ivec2 pixel, int currentSample) {
+    g_rngState = uint(pixel.x * 1973u + pixel.y * 9277u + currentSample * 26699u) | 1u;
+}
+/**
+ * @brief Generate a random float in the range [0, 1).
+ * @return A random float.
+ */
+float rand() {
+    g_rngState ^= g_rngState << 13;
+    g_rngState ^= g_rngState >> 17;
+    g_rngState ^= g_rngState << 5;
+    return float(g_rngState) * (1.0 / 4294967296.0);
+}
+
+/**
+ * @brief Build an orthonormal basis (u, v) given a normal vector (axis).
+ * @param axis The normal vector.
+ * @param[out] u Output vector for the first tangent.
+ * @param[out] v Output vector for the second tangent.
+ */
+void buildOrthonormalBasis(vec3 axis, out vec3 u, out vec3 v) {
+    vec3 tmp = abs(axis.x) < 1.0 - EPS ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    u = normalize(cross(tmp, axis));
+    v = cross(axis, u);
+}
+/**
+ * @brief Sample a direction on the hemisphere around the normal vector using cosine-weighted
+          sampling.
+ * @param n The normal vector at the point of interaction.
+ * @param[out] pdf Output variable to store the PDF value for the sampled direction.
+ * @return A sampled direction vector on the hemisphere.
+ */
+vec3 cosineSampleHemisphere(vec3 n, out float pdf) {
+    float r = sqrt(rand());
+    float phi = 2.0 * PI * rand();
+
+    float x = r * cos(phi);
+    float y = r * sin(phi);
+    float z = sqrt(max(0.0, 1.0 - r * r));
+
+    vec3 u, v;
+    buildOrthonormalBasis(n, u, v);
+    vec3 dir = normalize(x * u + y * v + z * n);
+    pdf = z / PI;
+
+    return dir;
+}
+/**
+ * @brief Compute the GGX normal distribution function (NDF) for given NdotH and alpha.
+ * @param NdotH The dot product of the normal and half-vector.
+ * @param alpha The roughness parameter squared.
+ * @return The GGX NDF value.
+ */
+float D_GGX(float NdotH, float alpha) {
+    float a2 = alpha * alpha;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    return a2 / (PI * denom * denom);
+}
+/**
+ * @brief Compute the Schlick-GGX geometric shadowing function for given NdotV and alpha.
+ * @param NdotV The dot product of the normal and view vector.
+ * @param alpha The roughness parameter squared.
+ * @return The Schlick-GGX geometric shadowing value.
+ */
+float G_SchlickGGX(float NdotV, float alpha) {
+    float k = (alpha + 1.0);
+    k = (k * k) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+/**
+ * @brief Sample a half-vector H based on the GGX distribution given the normal and roughness.
+ * @param N The normal vector at the point of interaction.
+ * @param alpha The roughness parameter squared.
+ * @param[out] pdf Output variable to store the PDF value for the sampled half-vector.
+ * @return A sampled half-vector H based on the GGX distribution.
+ */
+vec3 sampleGGX(vec3 N, float alpha, out float pdf) {
+    float u1 = rand();
+    float u2 = rand();
+
+    float a2 = alpha * alpha;
+
+    float phi = 2.0 * PI * u1;
+    float cosTheta = sqrt((1.0 - u2) / (1.0 + (a2 - 1.0) * u2));
+    float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+
+    vec3 u, v;
+    buildOrthonormalBasis(N, u, v);
+    vec3 H = normalize(
+        sinTheta * cos(phi) * u +
+        sinTheta * sin(phi) * v +
+        cosTheta * N
+    );
+    pdf = D_GGX(cosTheta, alpha) * cosTheta;
+
+    return H;
+}
+/**
+ * @brief Sample a direction for glass materials based on the incident direction, normal,
+          and index of refraction.
+ * @param wi The incident direction.
+ * @param n The surface normal at the point of interaction.
+ * @param[inout] inside A flag indicating if the ray is currently inside the material.
+ * @param ior The index of refraction of the material.
+ * @return A sampled direction vector for reflection or refraction.
+ */
+vec3 sampleGlass(vec3 wi, vec3 n, inout bool inside, float ior) {
+    float nc = 1.0;
+    float ng = ior;
+
+    float eta = inside ? ng / nc : nc / ng;
+
+    float cosi = abs(dot(wi, n));
+    float r0 = pow((nc - ng) / (nc + ng), 2.0);
+    float k = 1.0 - eta * eta * (1.0 - cosi * cosi);
+
+    vec3 r = reflect(wi, n);
+
+    if (k < 0.0)
+        return r; // Total internal reflection
+
+    float re = r0 + (1.0 - r0) * pow(1.0 - cosi, 2.0);
+
+    if (rand() < re)
+        return r;
+    else {
+        inside = !inside;
+        return normalize(
+            eta * wi - (eta * dot(n, wi) + sqrt(k)) * n
+        );
+    }
+}
+/**
+ * @brief Sample a point uniformly on a unit disk.
+ * @return A 2D vector representing the sampled point on the disk.
+ */
+vec2 sampleDisk() {
+    float r = sqrt(rand());
+    float theta = 2.0 * PI * rand();
+    return vec2(cos(theta), sin(theta)) * r;
+}
+
+/**
+ * @brief Struct representing a ray in 3D space.
+ */
+struct Ray {
+    vec3 origin; // Origin of the ray
+    vec3 direction; // Direction of the ray
+};
+
+/**
+ * @brief Struct representing the result of a ray intersection.
+ */
+struct HitRecord {
+    bool hit; // Flag indicating if an intersection occurred
+    float t; // Distance to intersection
+    vec3 normal; // Surface normal at intersection
+    vec3 tangent; // Interpolated tangent at intersection
+    vec2 texCoord; // Texture coordinates at intersection
+    uint idxMaterial; // Index of the material at intersection
+};
+/**
+ * @brief Function to test ray-triangle intersection.
+ * @param ray The ray to test.
+ * @param tri The triangle to test against.
+ * @return The result of the intersection test.
+ */
+HitRecord hitTriangle(Ray ray, Triangle tri) {
+    HitRecord result;
+    result.t = INFINITY;
+    result.hit = false;
+
+    Vertex v0 = b_vertices.vertices[tri.v0];
+    Vertex v1 = b_vertices.vertices[tri.v1];
+    Vertex v2 = b_vertices.vertices[tri.v2];
+
+    vec3 p0 = v0.pos.xyz;
+    vec3 p1 = v1.pos.xyz;
+    vec3 p2 = v2.pos.xyz;
+
+    vec3 e1 = p1 - p0;
+    vec3 e2 = p2 - p0;
+
+    vec3 p = cross(ray.direction, e2);
+    float det = dot(e1, p);
+
+    if (abs(det) < EPS)
+        return result;
+
+    float invDet = 1.0 / det;
+    vec3 tvec = ray.origin - p0;
+
+    float u = dot(tvec, p) * invDet;
+    if (u < 0.0 || u > 1.0)
+        return result;
+
+    vec3 q = cross(tvec, e1);
+    float v = dot(ray.direction, q) * invDet;
+    if (v < 0.0 || (u + v) > 1.0)
+        return result;
+
+    float t = dot(e2, q) * invDet;
+    if (t < EPS)
+        return result;
+
+    /* ===== Hit confirmed ===== */
+    result.hit = true;
+    result.t = t;
+
+    float w = 1.0 - u - v;
+
+    vec3 n0 = v0.normal.xyz;
+    vec3 n1 = v1.normal.xyz;
+    vec3 n2 = v2.normal.xyz;
+    result.normal = normalize(n0 * w + n1 * u + n2 * v);
+    if (dot(result.normal, ray.direction) > 0.0f)
+        result.normal = -result.normal;
+
+    vec3 t0v = v0.tangent.xyz;
+    vec3 t1v = v1.tangent.xyz;
+    vec3 t2v = v2.tangent.xyz;
+    vec3 tanInterp = t0v * w + t1v * u + t2v * v;
+    result.tangent = normalize(tanInterp - result.normal * dot(result.normal, tanInterp));
+
+    vec2 uv0 = v0.texCoord;
+    vec2 uv1 = v1.texCoord;
+    vec2 uv2 = v2.texCoord;
+    result.texCoord = uv0 * w + uv1 * u + uv2 * v;
+
+    result.idxMaterial = tri.idxMaterial;
+
+    return result;
+}
+/**
+ * @brief Function to test ray-AABB intersection.
+ * @param ray The ray to test.
+ * @param aabbMin The minimum coordinates of the AABB.
+ * @param aabbMax The maximum coordinates of the AABB.
+ * @return The distance to the intersection or INFINITY if no intersection occurs.
+ */
+float hitAABB(Ray ray, vec3 aabbMin, vec3 aabbMax) {
+    vec3 invDir = 1.0 / ray.direction;
+
+    vec3 t0 = (aabbMin - ray.origin) * invDir;
+    vec3 t1 = (aabbMax - ray.origin) * invDir;
+
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+
+    float tNear = max(max(tmin.x, tmin.y), tmin.z);
+    float tFar  = min(min(tmax.x, tmax.y), tmax.z);
+
+    if (tFar < max(tNear, 0.0))
+        return INFINITY;
+
+    return tNear;
+}
+/**
+ * @brief Function to traverse the BVH and find the closest intersection.
+ * @param ray The ray to trace.
+ * @return The closest hit record.
+ */
+HitRecord traverseBVH(Ray ray) {
+    HitRecord closest;
+    closest.t = INFINITY;
+    closest.hit = false;
+
+    const int MAX_STACK = 64;
+    int stack[MAX_STACK];
+    int stackPtr = 0;
+
+    stack[stackPtr++] = 0; // root
+
+    while (stackPtr > 0) {
+        int nodeIdx = stack[--stackPtr];
+        BvhNode node = b_BVH.bvhNodes[nodeIdx];
+
+        float nodeHit = hitAABB(ray, node.aabbMin.xyz, node.aabbMax.xyz);
+        if (nodeHit == INFINITY || nodeHit > closest.t)
+            continue;
+
+        if (node.leafFlag != 0) {
+            Triangle tri = b_triangles.triangles[node.idxTriangle];
+            HitRecord hit = hitTriangle(ray, tri);
+
+            if (hit.hit && hit.t < closest.t)
+                closest = hit;
+        } else {
+            int leftChild  = nodeIdx + 1;
+            int rightChild = int(nodeIdx + node.rChildOffset);
+
+            float tLeft = hitAABB(
+                ray,
+                b_BVH.bvhNodes[leftChild].aabbMin.xyz,
+                b_BVH.bvhNodes[leftChild].aabbMax.xyz
+            );
+
+            float tRight = INFINITY;
+            if (node.rChildOffset != 0) {
+                tRight = hitAABB(
+                    ray,
+                    b_BVH.bvhNodes[rightChild].aabbMin.xyz,
+                    b_BVH.bvhNodes[rightChild].aabbMax.xyz
+                );
+            }
+
+            if (tLeft < tRight) {
+                if (tRight < INFINITY)
+                    stack[stackPtr++] = rightChild;
+                if (tLeft < INFINITY)
+                    stack[stackPtr++] = leftChild;
+            } else {
+                if (tLeft < INFINITY)
+                    stack[stackPtr++] = leftChild;
+                if (tRight < INFINITY)
+                    stack[stackPtr++] = rightChild;
+            }
+        }
+    }
+
+    return closest;
+}
+
+/**
+ * @brief Uniform struct representing the spectral scene parameters.
+ */
+layout(binding = 8) uniform SpectralScene {
+    int nWaves; // Number of wavelength samples
+    uint idxSkyMaterial; // Index of the sky material in the spectral materials buffer
+    float skyTemperature; // Temperature of the sky for blackbody radiation calculations
+} u_spScene; // Spectral scene parameters
+/**
+ * @brief Storage buffer containing the wave numbers corresponding to each wavelength sample.
+ */
+layout(binding = 9) readonly buffer Waves {
+    float waveNumbers[]; // Array of wave numbers corresponding to each wavelength sample
+} b_waves; // Wave number buffer
+/**
+ * @brief Storage buffer containing the spectral emissivity values for each material and
+ *        wavelength.
+ */
+layout(binding = 10) readonly buffer SpMaterials {
+    float emissivities[]; // Spectral emissivity values for each material and wavelength
+} b_spMaterials; // Spectral material properties buffer
+
+/**
+ * @brief Compute the blackbody radiation power for a given temperature and wave number.
+ * @param temperature The temperature in Celsius.
+ * @param waveNumber The wave number corresponding to the wavelength sample.
+ * @return The blackbody radiation power for the given parameters.
+ */
+float bbp(float temperature, float waveNumber) {
+    const float c = 299792458.0;
+    const float k = 1.0 * 138064852e-31;
+    const float h = 2.0 * PI * 105457180e-42;
+    float v = waveNumber;
+    float T = temperature + 273.15;
+    return 2e8 * (h * c * c * v * v * v) / (exp(100.0 * h * c * v / k / T) - 1.0);
+}
+
+/**
+ * @brief Trace a ray through the scene and compute the radiance contribution for a specific
+ *        wavelength sample.
+ * @param ray The ray to trace.
+ * @param idxWave The index of the wavelength sample to compute the radiance for.
+ * @return The computed radiance contribution for the given ray and wavelength sample.
+ */
+float trace(Ray ray, int idxWave) {
+    Ray newRay = ray;
+
+    float radiance = 0.0;
+    float throughput = 1.0;
+
+    int bounces = 0;
+    bool inside = false;
+
+    while (bounces < u_scene.traceDepth) {
+        HitRecord hit = traverseBVH(newRay);
+
+        // ===== MISS : use sky =====
+        if (!hit.hit) {
+            int idxSky = int(u_spScene.idxSkyMaterial) * u_spScene.nWaves + idxWave;
+            float skyEmiss = b_spMaterials.emissivities[idxSky];
+            float skyBB = bbp(u_spScene.skyTemperature, b_waves.waveNumbers[idxWave]);
+            float skyRadiance = skyEmiss * skyBB;
+            radiance += throughput * skyRadiance;
+            break;
+        }
+
+        // ===== HIT =====
+        vec3 p = newRay.origin + newRay.direction * hit.t;
+        vec3 n = normalize(hit.normal);
+        Material material = b_materials.materials[hit.idxMaterial];
+
+        // normal mapping
+        if ((material.flags & MATERIAL_NORMAL_MAP) != 0) {
+            vec3 t = hit.tangent;
+            vec3 b = normalize(cross(n, t));
+            mat3 TBN = mat3(t, b, n);
+            vec3 nTex =
+                sampleTexture(material.idxNormalTex, hit.texCoord).xyz * 2.0 - 1.0;
+            n = normalize(TBN * nTex);
+        }
+
+        p += n * EPS;
+
+        // ===== Emission term =====
+        int idxEmiss = int(material.idxSpMaterial) * u_spScene.nWaves + idxWave;
+        float spectralEmittance = b_spMaterials.emissivities[idxEmiss];
+
+        float temperature = material.temperature;
+        if ((material.flags & MATERIAL_TEMPERATURE_MAP) != 0)
+            temperature = sampleTexture(material.idxTemperatureTex, hit.texCoord).r;
+
+        float blackbodyRadiance = bbp(temperature, b_waves.waveNumbers[idxWave]);
+        float emittedRadiance = spectralEmittance * blackbodyRadiance;
+        radiance += throughput * emittedRadiance;
+
+        // ===== Sample next direction =====
+        vec3 wi = newRay.direction;
+        vec3 wo;
+
+        if (material.type == MATERIAL_TYPE_DIFFUSE) {
+            float pdf = 0.0;
+            vec3 wo = cosineSampleHemisphere(n, pdf);
+            float cosTheta = max(dot(wo, n), 0.0);
+            float brdf = 1.0 / PI;
+            throughput *= brdf * cosTheta / pdf;
+        }
+        else if (material.type == MATERIAL_TYPE_GLOSSY) {
+            float roughness = material.roughness;
+            if ((material.flags & MATERIAL_ROUGHNESS_MAP) != 0)
+                roughness = sampleTexture(material.idxRoughnessTex, hit.texCoord).r;
+            float alpha = roughness * roughness;
+
+            vec3 V = -wi;
+            float NdotV = max(dot(n, V), 0.0);
+            if (NdotV <= 0.0)
+                break;
+            float pdf_h = 0.0;
+            vec3 H = sampleGGX(n, alpha, pdf_h);
+            vec3 L = reflect(-V, H);
+            float NdotL = max(dot(n, L), 0.0);
+            float NdotH = max(dot(n, H), 0.0);
+            float VdotH = max(dot(V, H), 0.0);
+            if (NdotL <= 0.0)
+                break;
+
+            float D = D_GGX(NdotH, alpha);
+            float G = G_SchlickGGX(NdotV, alpha) * G_SchlickGGX(NdotL, alpha);
+
+            float F0 = (material.ior - 1.0) / (material.ior + 1.0);
+            F0 *= F0;
+            float F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+
+            float pdf = pdf_h / (4.0 * VdotH);
+            float brdf = (D * G * F) / (4.0 * NdotV * NdotL);
+            throughput *= brdf * NdotL / pdf;
+
+            wo = L;
+        }
+        else if (material.type == MATERIAL_TYPE_TRANSLUCENT) {
+            wo = sampleGlass(wi, n, inside, material.ior);
+            if (inside)
+                p -= n * EPS * 2.0;
+        }
+        else // specular
+            wo = reflect(wi, n);
+
+        newRay.origin = p;
+        newRay.direction = normalize(wo);
+
+        bounces++;
+        // Russian roulette
+        if (bounces > 3) {
+            float p = clamp(throughput, 0.05, 0.95);
+            if (rand() > p)
+                break;
+            throughput /= p;
+        }
+    }
+
+    return radiance;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+
+    if (pixel.x >= u_scene.resX || pixel.y >= u_scene.resY)
+        return;
+
+    initRngState(pixel, u_scene.currentSample);
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(u_scene.resX, u_scene.resY);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    vec3 forward = normalize(u_camera.dir.xyz);
+    vec3 right = normalize(cross(forward, u_camera.up.xyz));
+    vec3 up = cross(right, forward);
+
+    float halfHeight = tan(radians(u_camera.fov * 0.5)) * u_camera.focal;
+    float halfWidth  = halfHeight * float(u_scene.resX) / float(u_scene.resY);
+
+    vec3 imageCenter = u_camera.pos.xyz + forward * u_camera.focal;
+    vec3 imagePoint = imageCenter + ndc.x * halfWidth * right + ndc.y * halfHeight * up;
+
+    vec3 pinholeDir = normalize(imagePoint - u_camera.pos.xyz);
+    // Focus plane intersection
+    float tFocus = u_camera.focusDist / dot(pinholeDir, forward);
+    vec3 focusPoint = u_camera.pos.xyz + pinholeDir * tFocus;
+    // Aperture
+    float apertureRadius = 0.5 * (u_camera.focal / u_camera.fStop);
+    // Lens sampling
+    vec2 lensSample = sampleDisk() * apertureRadius;
+    vec3 lensOffset = right * lensSample.x + up * lensSample.y;
+
+    Ray ray;
+    ray.origin = u_camera.pos.xyz + lensOffset;
+    ray.direction = normalize(focusPoint - ray.origin);
+
+    // Hero wavelength sampling
+    int idxWave = int(rand() * float(u_spScene.nWaves));
+    float radiance = trace(ray, idxWave);
+
+    float pLambda = 1.0 / float(u_spScene.nWaves);
+    radiance /= pLambda;
+
+    int waveBlockSize = u_scene.resX * u_scene.resY;
+    int pixelIndex = pixel.y * u_scene.resX + pixel.x;
+
+    for (int i = 0; i < u_spScene.nWaves; ++i) {
+        int bufferIndex = i * waveBlockSize + pixelIndex;
+
+        float contribution = (i == idxWave) ? radiance : 0.0;
+        float oldValue = b_outRadiances.radiances[bufferIndex];
+        float newValue = oldValue * float(u_scene.currentSample - 1) + contribution;
+        newValue /= float(u_scene.currentSample);
+
+        b_outRadiances.radiances[bufferIndex] = newValue;
+    }
+}

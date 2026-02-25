@@ -1,0 +1,33 @@
+/**
+ * @file resource.rc
+ * @brief Resource script for the application.
+ */
+
+#include "windows.h"
+
+IDI_MAIN_ICON ICON "icon.ico"
+IDI_MAIN_ICON_SMALL ICON "icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 3, 0, 0, 0
+PRODUCTVERSION 3, 0, 0, 0
+FILEOS VOS__WINDOWS32
+FILETYPE VFT_APP
+{
+    BLOCK "StringFileInfo"
+    {
+        BLOCK "040904b0" // U.S. English
+        {
+            VALUE "FileDescription", "Spectrumizer"
+            VALUE "FileVersion", "3.0.0.0"
+            VALUE "ProductName", "Spectrumizer"
+            VALUE "ProductVersion", "3.0.0.0"
+            VALUE "Copyright", "2025 Jed Wang"
+        }
+    }
+
+    BLOCK "VarFileInfo"
+    {
+        VALUE "Translation", 0x409, 1200
+    }
+}

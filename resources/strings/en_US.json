@@ -1,0 +1,194 @@
+{
+  "app_name": "Spectrumizer",
+  "menu_bar": {
+    "file": "File",
+    "file_menu": {
+      "new_scene": "New Scene",
+      "open_scene": "Open Scene",
+      "save": "Save",
+      "save_as": "Save As...",
+      "load_model": "Load Model...",
+      "export": "Export...",
+      "settings": "Settings...",
+      "exit": "Exit"
+    },
+    "edit": "Edit",
+    "edit_menu": {
+      "undo": "Undo",
+      "redo": "Redo",
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "delete": "Delete",
+      "select_all": "Select All"
+    },
+    "view": "View",
+    "view_menu": {
+      "preview_mode": "Preview Mode",
+      "path_tracer_output": "Path Tracer Output"
+    },
+    "render": "Render",
+    "render_menu": {
+      "start": "Start",
+      "pause": "Pause",
+      "stop": "Stop",
+      "restart": "Restart"
+    },
+    "help": "Help",
+    "help_menu": {
+      "about": "About {0}..."
+    }
+  },
+  "tool_bar": {
+    "save": "Save",
+    "export": "Export",
+    "display_modes": {
+      "preview_mode": "Preview Mode",
+      "path_tracer_output": "Path Tracer Output"
+    },
+    "load_model": "Load Model",
+    "target_samples": "Target Samples:",
+    "settings": "Settings"
+  },
+  "right_panel": {
+    "title": "Path Tracer",
+    "image_node": {
+      "title": "Image",
+      "trace_depth": "Trace Depth",
+      "resolution_x": "Resolution X",
+      "resolution_y": "Resolution Y"
+    },
+    "camera_node": {
+      "title": "Camera",
+      "focus_dist": "Focus Distance",
+      "f_stop": "F-Stop",
+      "position": "Camera Position",
+      "rotation": "Camera Rotation"
+    },
+    "scene_node": {
+      "title": "Scene",
+      "models_loaded": "{0} model(s) loaded",
+      "add": "Add"
+    },
+    "model_node": {
+      "name": "Name",
+      "location": "Location",
+      "rotation": "Rotation",
+      "scale": "Scale"
+    },
+    "mesh_node": {
+      "default_name": "Mesh ",
+      "name": "Name",
+      "material_type": "Material Type",
+      "material_types": {
+        "diffuse": "Diffuse",
+        "specular": "Specular",
+        "glossy": "Glossy",
+        "translucent": "Translucent"
+      },
+      "roughness": "Roughness",
+      "material": "Material",
+      "temperature": "Temperature",
+      "ior": "IOR",
+      "normal_texture": "Normal Texture",
+      "roughness_texture": "Roughness Texture",
+      "temperature_texture": "Temperature Texture",
+      "load": "Load",
+      "remove": "Remove"
+    }
+  },
+  "status_bar": {
+    "idle": "Idle",
+    "paused": "Paused, samples: ",
+    "rendering": "Rendering, samples: ",
+    "efficiency": "Avg Time per Sample: {0} s",
+    "time_elapsed": "Time elapsed: {0} s",
+    "triangle_count": "Triangle Count: "
+  },
+  "settings": {
+    "title": "Settings",
+    "reset": "Reset to Defaults",
+    "general": "General",
+    "language": "Language",
+    "languages": {
+      "en_us": "English",
+      "zh_cn": "简体中文"
+    },
+    "previewer": "Previewer",
+    "msaa": "MSAA Level",
+    "cam_move_speed": "Camera Navigation Speed",
+    "bg_color": "Background Color",
+    "hover_color": "Highlight Color",
+    "picked_color": "Selection Color"
+  },
+  "about": {
+    "title": "About ",
+    "version": "Version: ",
+    "ok": "OK"
+  },
+  "save_dialog": {
+    "text": "Save changes before closing?",
+    "default_filename": "Untitled.sps",
+    "yes": "Yes",
+    "no": "No",
+    "cancel": "Cancel"
+  },
+  "open_scene_dialog": {
+    "title": "Open Scene",
+    "filter_desc": "Spectrumizer Scene (*.sps)"
+  },
+  "save_scene_dialog": {
+    "title": "Save As",
+    "filter_desc": "Spectrumizer Scene (*.sps)"
+  },
+  "load_model_dialog": {
+    "title": "Load Model",
+    "filter_desc": "WaveFront (*.obj)"
+  },
+  "load_image_dialog": {
+    "title": "Load Image",
+    "filter_desc": "Image Files (*.jpg;*.jpeg;*.png;*.bmp;*.tga)"
+  },
+  "export_image_dialog": {
+    "title": "Export As",
+    "filter_desc": "PNG (*.png)"
+  },
+  "load_txt_dialog": {
+    "title": "Load Text",
+    "filter_desc": "Text Files (*.txt)"
+  },
+  "export_txt_dialog": {
+    "title": "Export As",
+    "filter_desc": "Text Files (*.txt)"
+  },
+  "left_panel" : {
+    "title": "Spectrum Data",
+    "output_disp": {
+      "title": "Output Display",
+      "channel": "Channel"
+    },
+    "import": "Import",
+    "add": "Add",
+    "waves_node": {
+      "title": "Waves",
+      "count": "{0} wave(s)",
+      "index": "Index",
+      "wave_number": "Wave Number (1/cm)"
+    },
+    "materials_node": {
+      "title": "Materials",
+      "count": "{0} material(s)"
+    },
+    "material_node": {
+      "default_name": "Material ",
+      "name": "Name",
+      "wave_index": "Wave Index",
+      "emissivity": "Emissivity"
+    },
+    "sky_node": {
+      "title": "Sky",
+      "material": "Sky Material",
+      "temperature": "Sky Temperature"
+    }
+  }
+}

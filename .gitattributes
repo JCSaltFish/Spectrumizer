@@ -61,3 +61,4 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+third_party/vulkan/lib/SPIRV-Tools-optd.lib filter=lfs diff=lfs merge=lfs -text
