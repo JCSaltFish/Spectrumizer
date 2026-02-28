@@ -7,12 +7,12 @@
 
 #include "GfxPub.h"
 
- /**
-  * @brief Scope guard class.
-  */
+/**
+ * @brief Scope guard class.
+ */
 class GfxScopeGuard {
 public:
-    GfxScopeGuard(std::function<void()> onExit) : m_onExit(onExit) {};
+    explicit GfxScopeGuard(std::function<void()> onExit) : m_onExit(onExit) {};
     ~GfxScopeGuard() { if (m_onExit) m_onExit(); };
     GfxScopeGuard(const GfxScopeGuard&) = delete;
     GfxScopeGuard& operator=(const GfxScopeGuard&) = delete;

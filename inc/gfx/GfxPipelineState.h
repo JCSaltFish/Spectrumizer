@@ -7,9 +7,9 @@
 
 #include "GfxCommon.h"
 
- /**
-  * @brief Enum representing various graphics pipeline states.
-  */
+/**
+ * @brief Enum representing various graphics pipeline states.
+ */
 enum class GfxPipelineState {
     VIEWPORT,
     SCISSOR,

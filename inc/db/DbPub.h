@@ -14,20 +14,19 @@
  * limitations under the License.
  */
 
- /**
-  * @file DbPub.h
-  * @brief Public header file for the DB module.
-  */
+/**
+ * @file DbPub.h
+ * @brief Public header file for the DB module.
+ */
 
 #pragma once
 
 #include "DbSerializer.h"
 
-  /**
-   * @brief Registry for database object types.
-   */
-class DbTypeRegistry
-{
+/**
+ * @brief Registry for database object types.
+ */
+class DbTypeRegistry {
     friend class DB;
 
 private:
@@ -37,8 +36,7 @@ public:
     /**
      * @brief Information about a registered type.
      */
-    struct TypeInfo
-    {
+    struct TypeInfo {
         // Version of the type for migration
         uint32_t version = 0;
         // Unique name of the type
@@ -54,8 +52,7 @@ public:
     DbTypeRegistry(const DbTypeRegistry&) = delete;
     DbTypeRegistry& operator=(const DbTypeRegistry&) = delete;
 
-    static DbTypeRegistry& instance()
-    {
+    static DbTypeRegistry& instance() {
         static DbTypeRegistry registry;
         return registry;
     };
@@ -65,26 +62,22 @@ public:
      * @tparam T The type to register.
      */
     template<typename T>
-    void registerType()
-    {
+    void registerType() {
         std::unique_lock lock(m_mutex);
         if (m_registry.find(T::TYPE_NAME) != m_registry.end())
             return; // Already registered
         TypeInfo info;
         info.version = T::VERSION;
         info.typeName = T::TYPE_NAME;
-        info.serialize = [](DbSerializer& serializer, const std::any& obj)
-            {
+        info.serialize = [](DbSerializer& serializer, const std::any& obj) {
                 T::serialize(serializer, std::any_cast<const T&>(obj));
             };
-        info.deserialize = [](DbSerializer& serializer, std::any& obj)
-            {
+        info.deserialize = [](DbSerializer& serializer, std::any& obj) {
                 if (!obj.has_value())
                     obj = T{};
                 T::deserialize(serializer, std::any_cast<T&>(obj));
             };
-        info.migrate = [](int oldVersion, std::any& obj)
-            {
+        info.migrate = [](int oldVersion, std::any& obj) {
                 if (obj.has_value())
                     T::migrate(oldVersion, std::any_cast<T&>(obj));
             };
@@ -97,8 +90,7 @@ public:
      * @return True if the type is registered, false otherwise.
      */
     template<typename T>
-    bool isRegistered() const
-    {
+    bool isRegistered() const {
         std::shared_lock lock(m_mutex);
         return m_nameLookup.find(typeid(T)) != m_nameLookup.end();
     };
@@ -126,16 +118,14 @@ class DbObjHandle;
 /**
  * @brief The database.
  */
-class DB
-{
+class DB {
     friend class DbObjHandle;
 
 public:
     /**
      * @brief Result codes for database operations.
      */
-    enum class Result
-    {
+    enum class Result {
         SUCCESS = 0,
         FAILURE = 1,
         INVALID_HANDLE,
@@ -151,17 +141,14 @@ public:
     DB() = default;
     DB(const std::vector<uint8_t>& magic, int version) :
         m_magic(magic),
-        m_version(version)
-    {
-    };
+        m_version(version) {};
     ~DB() = default;
 
 private:
     /**
      * @brief Entry representing an object in the database.
      */
-    struct ObjectEntry
-    {
+    struct ObjectEntry {
         ID id = 0; // Unique ID (generation + index)
         std::string typeName = {}; // Type name of the object
         bool alive = false; // Whether the object is alive
@@ -171,8 +158,7 @@ private:
     /**
      * @brief Operation types for transactions.
      */
-    enum class OpType
-    {
+    enum class OpType {
         CREATE,
         MODIFY,
         DELETE,
@@ -180,8 +166,7 @@ private:
     /**
      * @brief Operation record for transactions.
      */
-    struct Op
-    {
+    struct Op {
         OpType type = OpType::CREATE; // Type of operation
         ID objId = 0; // ID of the object
         std::string typeName = {}; // Type name of the object
@@ -340,21 +325,17 @@ private:
     size_t m_maxUndoStackSize = 100; // Maximum size of undo stack
 };
 
-namespace DbUtils
-{
+namespace DbUtils {
 
 /**
  * @brief Guard for database transactions using RAII.
  */
-class TxnGuard
-{
+class TxnGuard {
 public:
-    explicit TxnGuard(std::shared_ptr<DB> db) : m_db(db)
-    {
+    explicit TxnGuard(std::shared_ptr<DB> db) : m_db(db) {
         m_db->beginTxn();
     };
-    ~TxnGuard()
-    {
+    ~TxnGuard() {
         if (!m_committed && m_db)
             m_db->rollbackTxn();
     };
@@ -365,8 +346,7 @@ public:
     /**
      * @brief Commit the transaction.
      */
-    void commit()
-    {
+    void commit() {
         m_db->commitTxn();
         m_committed = true;
     };
@@ -386,8 +366,7 @@ private:
  * @return DB::Result indicating success or failure.
  */
 template<typename Fn, typename... Args>
-DB::Result txnFn(std::shared_ptr<DB>& db, Fn&& fn, Args&&... args)
-{
+DB::Result txnFn(std::shared_ptr<DB>& db, Fn&& fn, Args&&... args) {
     TxnGuard txnGuard(db);
     DB::Result result = std::forward<Fn>(fn)(std::forward<Args>(args)...);
     if (result == DB::Result::SUCCESS)
@@ -400,8 +379,7 @@ DB::Result txnFn(std::shared_ptr<DB>& db, Fn&& fn, Args&&... args)
 /**
  * @brief Handle to a database object.
  */
-class DbObjHandle
-{
+class DbObjHandle {
 public:
     DbObjHandle(DB* db = nullptr, DB::ID id = 0) : m_db(db), m_id(id) {};
 
@@ -434,10 +412,8 @@ private:
 };
 
 template<>
-struct std::hash<DbObjHandle>
-{
-    std::size_t operator()(const DbObjHandle& handle) const noexcept
-    {
+struct std::hash<DbObjHandle> {
+    std::size_t operator()(const DbObjHandle& handle) const noexcept {
         std::size_t h1 = std::hash<DB*>{}(handle.getDB());
         std::size_t h2 = std::hash<uint32_t>{}(handle.getID());
         return h1 ^ (h2 << 1);
@@ -445,8 +421,7 @@ struct std::hash<DbObjHandle>
 };
 
 template<typename T>
-DbObjHandle DB::objCreate(const T& obj)
-{
+DbObjHandle DB::objCreate(const T& obj) {
     std::unique_lock lock(m_mutex);
 
     if (!DbTypeRegistry::instance().isRegistered<T>())
@@ -459,14 +434,11 @@ DbObjHandle DB::objCreate(const T& obj)
 
     ObjectEntry entry;
     uint32_t index = -1;
-    if (!m_freeIndices.empty())
-    {
+    if (!m_freeIndices.empty()) {
         index = *m_freeIndices.begin();
         m_freeIndices.erase(m_freeIndices.begin());
         m_gens[index]++;
-    }
-    else
-    {
+    } else {
         index = static_cast<uint32_t>(m_objects.size());
         m_objects.push_back(ObjectEntry{});
         m_gens.push_back(0);
@@ -476,8 +448,7 @@ DbObjHandle DB::objCreate(const T& obj)
     entry.alive = true;
     entry.data = obj;
 
-    if (m_inTxn)
-    {
+    if (m_inTxn) {
         // Save "before" (non-existent) into workspace
         ObjectEntry origEntry{};
         origEntry.id = entry.id;
@@ -502,8 +473,7 @@ DbObjHandle DB::objCreate(const T& obj)
 }
 
 template<typename T>
-DB::Result DB::objDelete(const DbObjHandle& handle)
-{
+DB::Result DB::objDelete(const DbObjHandle& handle) {
     std::unique_lock lock(m_mutex);
 
     uint32_t index = handle.getID() & 0xFFFF;
@@ -519,8 +489,7 @@ DB::Result DB::objDelete(const DbObjHandle& handle)
     if (!typeInfo)
         return Result::UNKONWN_TYPE;
 
-    if (m_inTxn)
-    {
+    if (m_inTxn) {
         m_txnWorkspace[entry.id] = entry;
 
         Op op;
@@ -541,8 +510,7 @@ DB::Result DB::objDelete(const DbObjHandle& handle)
 }
 
 template<typename T>
-DB::Result DB::objModify(const DbObjHandle& handle, const T& newData)
-{
+DB::Result DB::objModify(const DbObjHandle& handle, const T& newData) {
     std::unique_lock lock(m_mutex);
 
     uint32_t index = handle.getID() & 0xFFFF;
@@ -560,8 +528,7 @@ DB::Result DB::objModify(const DbObjHandle& handle, const T& newData)
         return Result::UNKONWN_TYPE;
 
     const std::any oldAny = entry.data; // capture BEFORE
-    if (m_inTxn)
-    {
+    if (m_inTxn) {
         if (m_txnWorkspace.find(entry.id) == m_txnWorkspace.end())
             m_txnWorkspace[entry.id] = entry;
 
@@ -583,8 +550,7 @@ DB::Result DB::objModify(const DbObjHandle& handle, const T& newData)
 }
 
 template<typename T>
-const T* DB::objGet(const DbObjHandle& handle) const
-{
+const T* DB::objGet(const DbObjHandle& handle) const {
     std::shared_lock lock(m_mutex);
 
     uint32_t index = handle.getID() & 0xFFFF;
@@ -600,10 +566,8 @@ const T* DB::objGet(const DbObjHandle& handle) const
     if (!typeInfo)
         return nullptr;
 
-    try
-    {
+    try {
         return std::any_cast<T>(&entry.data);
-    }
-    catch (const std::bad_any_cast&) {}
+    } catch (const std::bad_any_cast&) {}
     return nullptr;
 }
